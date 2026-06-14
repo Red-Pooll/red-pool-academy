@@ -469,7 +469,7 @@ async function loadData() {
 
       if (error) throw error;
 
-      if (data && data.length > 0) {
+      if (data) {
         tricks = data.map(t => ({
           id: t.id,
           title: t.title,
