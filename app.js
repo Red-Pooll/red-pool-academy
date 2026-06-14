@@ -431,16 +431,7 @@ function setupDate() {
 }
 
 // Load from LocalStorage
-function loadData() {
-  // Load custom tricks + default mock tricks
-  const storedTricks = localStorage.getItem('fivem_tricks');
-  if (storedTricks) {
-    tricks = JSON.parse(storedTricks);
-  } else {
-    tricks = [...INITIAL_TRICKS];
-    localStorage.setItem('fivem_tricks', JSON.stringify(tricks));
-  }
-
+async function loadData() {
   // Load favorites
   const storedFavs = localStorage.getItem('fivem_tricks_favs');
   favorites = storedFavs ? JSON.parse(storedFavs) : [];
@@ -458,6 +449,49 @@ function loadData() {
 
   // Load Admin state
   isAdmin = sessionStorage.getItem('fivem_admin') === 'true';
+
+  // Load custom tricks + default mock tricks from localStorage first (for immediate display)
+  const storedTricks = localStorage.getItem('fivem_tricks');
+  if (storedTricks) {
+    tricks = JSON.parse(storedTricks);
+  } else {
+    tricks = [...INITIAL_TRICKS];
+    localStorage.setItem('fivem_tricks', JSON.stringify(tricks));
+  }
+
+  // Then fetch updated tricks from Supabase in the background
+  if (isSupabaseConfigured()) {
+    try {
+      const { data, error } = await supabaseClient
+        .from('tricks')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        tricks = data.map(t => ({
+          id: t.id,
+          title: t.title,
+          category: t.category,
+          difficulty: t.difficulty,
+          duration: t.duration,
+          videoUrl: t.video_url || t.videoUrl, // handle both casing variants
+          description: t.description,
+          checklist: t.checklist || [],
+          tips: t.tips
+        }));
+        saveState('fivem_tricks', tricks);
+        
+        // Rerender grids & stats to show the latest online database items
+        renderTricksGrid();
+        renderRecommendedTricks();
+        updateDashboardStats();
+      }
+    } catch (e) {
+      console.warn("Failed to load tricks from Supabase, using offline cache:", e);
+    }
+  }
 }
 
 // Helper: check if a trick is locked behind paywall
@@ -1218,7 +1252,7 @@ function closeModalOnOverlay(event) {
 }
 
 // Form Submission: Add New Red Pool Combat Trick
-function handleFormSubmit(event) {
+async function handleFormSubmit(event) {
   event.preventDefault();
 
   const title = document.getElementById('trick-title').value.trim();
@@ -1250,18 +1284,43 @@ function handleFormSubmit(event) {
     tips: tips || null
   };
 
-  // Add to state and save
-  tricks.unshift(newTrick); // Add to the front of list
+  // Add to local state first (immediate responsiveness)
+  tricks.unshift(newTrick);
   saveState('fivem_tricks', tricks);
 
   // Reset form
   document.getElementById('add-trick-form').reset();
 
-  // Show Toast notification
-  showToast('เพิ่มทริคไม้พูลใหม่สำเร็จ!');
-
   // Redirect to Gallery view
   switchTab('gallery');
+
+  // If Supabase is configured, upload to database
+  if (isSupabaseConfigured()) {
+    showToast('⏳ กำลังบันทึกทริคขึ้นฐานข้อมูล...');
+    try {
+      const { error } = await supabaseClient
+        .from('tricks')
+        .insert([{
+          id,
+          title,
+          category,
+          difficulty,
+          duration,
+          video_url: videoUrl,
+          description,
+          checklist,
+          tips: tips || null
+        }]);
+
+      if (error) throw error;
+      showToast('เพิ่มทริคไม้พูลใหม่สำเร็จ!');
+    } catch (e) {
+      console.error("Failed to upload trick to Supabase:", e);
+      showToast('⚠️ เพิ่มทริคสำเร็จในเครื่อง แต่ไม่สามารถอัปโหลดขึ้นเซิร์ฟเวอร์ได้');
+    }
+  } else {
+    showToast('เพิ่มทริคไม้พูลใหม่สำเร็จ!');
+  }
 }
 
 // Toast Alert display
@@ -1802,7 +1861,7 @@ function closeLandingPage() {
 }
 
 // Admin only: Delete a trick from the workspace list
-function handleDeleteClick(trickId, event) {
+async function handleDeleteClick(trickId, event) {
   if (event) event.stopPropagation(); // Prevent opening video details modal
   
   if (!isAdmin) {
@@ -1814,7 +1873,7 @@ function handleDeleteClick(trickId, event) {
   if (!trick) return;
   
   if (confirm(`คุณต้องการลบบทเรียน "${trick.title}" ใช่หรือไม่?`)) {
-    // Remove from tricks list
+    // Remove from tricks list locally
     tricks = tricks.filter(t => t.id !== trickId);
     saveState('fivem_tricks', tricks);
     
@@ -1842,6 +1901,23 @@ function handleDeleteClick(trickId, event) {
     renderRecommendedTricks();
     updateDashboardStats();
     
-    showToast(`ลบบทเรียน "${trick.title}" สำเร็จ`);
+    // If Supabase is configured, delete from database
+    if (isSupabaseConfigured()) {
+      showToast('⏳ กำลังลบข้อมูลออกจากฐานข้อมูล...');
+      try {
+        const { error } = await supabaseClient
+          .from('tricks')
+          .delete()
+          .eq('id', trickId);
+
+        if (error) throw error;
+        showToast(`ลบบทเรียน "${trick.title}" สำเร็จ`);
+      } catch (e) {
+        console.error("Failed to delete trick from Supabase:", e);
+        showToast('⚠️ ลบสำเร็จในเครื่อง แต่ไม่สามารถลบออกจากเซิร์ฟเวอร์ได้');
+      }
+    } else {
+      showToast(`ลบบทเรียน "${trick.title}" สำเร็จ`);
+    }
   }
 }
